@@ -1,4 +1,4 @@
-# Token Launch Radar — radar-2
+# Token Launch Radar — radar-3
 
 A token launch radar built for the make.fun bounty
 [Build the best token launch radar](https://make.fun/bounty/token-radar-01).
@@ -18,19 +18,24 @@ protocols with TVL ≥ $50M, 160 early pre-token rows below that floor, and a
 clearly separated live-token segment. Every row carries an implied launch
 valuation and a concrete farm plan.
 
-## The model (radar-2)
+## The model (radar-3)
 
 Implied value is calibrated from the snapshot itself, not a fixed multiple:
 
-1. **Peer power law.** A log-log regression of market cap on TVL over the
-   snapshot's live-token peers (fitted at runtime, peers ordered by slug so
-   the result is deterministic) gives the base value. Large protocols trade
-   at far lower mcap/TVL ratios than small ones, so a flat 0.25×TVL multiple
-   (the starter baseline) systematically overvalues the giants.
-2. **Momentum tilt.** 7-day TVL change, clamped to −30%…+30% with a modest
+1. **Robust peer power law.** A log-log regression of market cap on TVL over
+   the snapshot's live-token peers (fitted at runtime, peers ordered by slug
+   so the result is deterministic) gives the base value — in two passes.
+   The first pass is plain least squares; then every peer whose residual
+   lies beyond 2.5 robust sigmas (median absolute deviation, scaled) is
+   trimmed and the line is refitted on the survivors, so a few extreme
+   peers cannot bend the price line the whole board is read from. Large
+   protocols trade at far lower mcap/TVL ratios than small ones, so a flat
+   0.25×TVL multiple (the starter baseline) systematically overvalues the
+   giants.
+2. **Momentum tilt.** 7-day TVL change, clamped to −40%…+40% at a 0.30
    weight — in the snapshot its correlation with peer residuals is weak, so
    it tilts the ranking instead of driving it.
-3. **Maturity tilt.** A log-scaled age factor (0.80–1.00 over 3 years), so
+3. **Maturity tilt.** A log-scaled age factor (0.82–1.00 over 3 years), so
    young protocols are not taxed linearly for being new.
 
 No protocol names are hardcoded. The build is deterministic: two runs of
