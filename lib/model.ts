@@ -6,22 +6,30 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed into
 // the ranked board.
 //
-// Implied value follows only from the snapshot's own figures, in three steps (model radar-2):
+// Implied value follows only from the snapshot's own figures, in three steps (model radar-3):
 //
-//   1. Peer calibration. The snapshot's live-token protocols are the market's own revealed prices.
-//      A log-log regression of market cap on TVL over every live, non-CEX peer with a positive
-//      market cap (computed from the snapshot at run time, peers in slug order, so the fit is
-//      deterministic) gives  peerBase = exp(intercept) x tvl_usd ^ slope.  In this snapshot the
-//      slope is about 0.47, far below 1: the market pays a falling multiple on each extra TVL
-//      dollar as protocols grow, so a flat TVL multiple (the house radar-1 used 0.25 x TVL)
-//      systematically overvalues the largest protocols against what peers actually trade for.
-//   2. Momentum tilt. growth = clamp(change_7d, -30, 30); growthMult = 1 + (growth/100) x 0.35.
-//      The clamp is tighter than radar-1's -60..120 and the weight lower: one week of TVL change
-//      is a noisy signal, and in this snapshot the residual correlation between change_7d and
-//      peer value is near zero, so momentum may reorder neighbours but never dominate size.
-//   3. Maturity tilt. maturity = 0.8 + 0.2 x log1p(min(age_days, 1095)) / log1p(1095)
+//   1. Robust peer calibration. The snapshot's live-token protocols are the market's own revealed
+//      prices, but a plain least-squares fit lets a handful of extreme peers drag the line: in a
+//      universe of 100+ live tokens, a few mispriced micro-caps sit orders of magnitude off the
+//      log-log trend and pull the slope toward themselves. So the fit runs in two passes over
+//      every live, non-CEX peer with a positive market cap (computed from the snapshot at run
+//      time, peers in slug order, so the fit is deterministic): a first log-log regression of
+//      market cap on TVL, then every peer whose residual lies beyond 2.5 robust sigmas (the
+//      median absolute deviation of the residuals, scaled by 1.4826) is trimmed, and the line is
+//      refitted on the survivors. peerBase = exp(intercept) x tvl_usd ^ slope then prices the
+//      typical peer, not the loudest. The slope lands far below 1 either way: the market pays a
+//      falling multiple on each extra TVL dollar as protocols grow, so a flat TVL multiple (the
+//      house radar-1 used 0.25 x TVL) systematically overvalues the largest protocols against
+//      what peers actually trade for.
+//   2. Momentum tilt. growth = clamp(change_7d, -40, 40); growthMult = 1 + (growth/100) x 0.30.
+//      A slightly wider clamp than radar-2's -30..30 at a lower weight: with the calibration
+//      itself now robust, one week of TVL change may speak a little louder, but it is still a
+//      noisy signal (its residual correlation with peer value in this snapshot is near zero),
+//      so momentum may reorder neighbours but never dominate size.
+//   3. Maturity tilt. maturity = 0.82 + 0.18 x log1p(min(age_days, 1095)) / log1p(1095)
 //      (age_days unknown: 365). A log curve, not radar-1's linear 0.6..1.0 ramp: the first months
 //      of tracked history prove the most, and a young protocol is no longer taxed 40% for its age.
+//      Radar-3 narrows radar-2's 0.80..1.00 band slightly: age is evidence, not a verdict.
 //
 //   implied = max(1, round(peerBase x growthMult x maturity))
 //
@@ -64,17 +72,17 @@ export interface ModelConstants {
 }
 
 export const MODEL: ModelConstants = {
-  growth_weight: 0.35,
-  growth_floor: -30,
-  growth_cap: 30,
-  maturity_floor: 0.8,
-  maturity_range: 0.2,
+  growth_weight: 0.3,
+  growth_floor: -40,
+  growth_cap: 40,
+  maturity_floor: 0.82,
+  maturity_range: 0.18,
   maturity_days: 1095,
   unknown_age_days: 365,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** The peer calibration: a log-log fit of live-token market cap on TVL, from the snapshot itself. */
 export interface PeerFit {
@@ -87,9 +95,44 @@ export interface PeerFit {
 /** The fallback fit if a snapshot carried no usable live peer: radar-1's flat 0.25 x TVL. */
 export const FALLBACK_FIT: PeerFit = { peers: 0, intercept: Math.log(0.25), slope: 1, r2: 0 };
 
+/** The median of a non-empty list, taken on a sorted copy so the caller's order is untouched. */
+function median(values: number[]): number {
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
+}
+
+/** One ordinary least-squares pass of log(mcap) on log(TVL), with its R² over the rows it is given. */
+function ols(xs: number[], ys: number[]): { intercept: number; slope: number; r2: number } | null {
+  const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
+  const my = ys.reduce((a, b) => a + b, 0) / ys.length;
+  let num = 0;
+  let den = 0;
+  xs.forEach((x, i) => {
+    num += (x - mx) * (ys[i]! - my);
+    den += (x - mx) * (x - mx);
+  });
+  if (den === 0) return null;
+  const slope = num / den;
+  const intercept = my - slope * mx;
+  let ss = 0;
+  let st = 0;
+  ys.forEach((y, i) => {
+    const f = intercept + slope * xs[i]!;
+    ss += (y - f) * (y - f);
+    st += (y - my) * (y - my);
+  });
+  return { intercept, slope, r2: st === 0 ? 0 : 1 - ss / st };
+}
+
 /**
  * Fit log(mcap) = intercept + slope x log(TVL) over the snapshot's live-token, non-CEX protocols
- * with a positive market cap, in slug order so the floating-point sums are run-identical.
+ * with a positive market cap, in slug order so the floating-point sums are run-identical — in two
+ * passes. The first pass is plain least squares; the second trims every peer whose residual lies
+ * beyond 2.5 robust sigmas (1.4826 x the median absolute deviation of the residuals, the scale a
+ * normal distribution would give the MAD) and refits on the survivors, so a few extreme peers
+ * cannot bend the price line the whole board is read from. When the trim would leave too few
+ * peers, or the residuals carry no spread to trim against, the first pass stands.
  */
 export function peerFit(snapshot: Snapshot): PeerFit {
   const peers = snapshot.protocols
@@ -98,25 +141,26 @@ export function peerFit(snapshot: Snapshot): PeerFit {
   if (peers.length < 8) return FALLBACK_FIT;
   const xs = peers.map((p) => Math.log(p.tvl_usd));
   const ys = peers.map((p) => Math.log(p.mcap_usd as number));
-  const mx = xs.reduce((a, b) => a + b, 0) / xs.length;
-  const my = ys.reduce((a, b) => a + b, 0) / ys.length;
-  let num = 0;
-  let den = 0;
-  let ss = 0;
-  let st = 0;
-  xs.forEach((x, i) => {
-    num += (x - mx) * (ys[i]! - my);
-    den += (x - mx) * (x - mx);
+  const first = ols(xs, ys);
+  if (first === null) return FALLBACK_FIT;
+  const residuals = ys.map((y, i) => y - (first.intercept + first.slope * xs[i]!));
+  const centre = median(residuals);
+  const sigma = 1.4826 * median(residuals.map((r) => Math.abs(r - centre)));
+  if (sigma === 0) return { peers: peers.length, intercept: first.intercept, slope: first.slope, r2: first.r2 };
+  const keptX: number[] = [];
+  const keptY: number[] = [];
+  residuals.forEach((r, i) => {
+    if (Math.abs(r - centre) <= 2.5 * sigma) {
+      keptX.push(xs[i]!);
+      keptY.push(ys[i]!);
+    }
   });
-  if (den === 0) return FALLBACK_FIT;
-  const slope = num / den;
-  const intercept = my - slope * mx;
-  ys.forEach((y, i) => {
-    const f = intercept + slope * xs[i]!;
-    ss += (y - f) * (y - f);
-    st += (y - my) * (y - my);
-  });
-  return { peers: peers.length, intercept, slope, r2: st === 0 ? 0 : 1 - ss / st };
+  if (keptX.length < 8 || keptX.length === peers.length) {
+    return { peers: peers.length, intercept: first.intercept, slope: first.slope, r2: first.r2 };
+  }
+  const second = ols(keptX, keptY);
+  if (second === null) return { peers: peers.length, intercept: first.intercept, slope: first.slope, r2: first.r2 };
+  return { peers: keptX.length, intercept: second.intercept, slope: second.slope, r2: second.r2 };
 }
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
