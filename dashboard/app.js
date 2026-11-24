@@ -1,6 +1,6 @@
-// Token Launch Radar — radar-2 dashboard. Reads window.RADAR (written beside dashboard/ by main.ts)
-// and renders the peer-calibrated board, filters, a per-protocol detail view with the model's own
-// arithmetic and the protocol's farm plan, and the live-token set kept apart from the ranking.
+// Token Launch Radar — radar-3 dashboard. Reads window.RADAR (written beside dashboard/ by main.ts)
+// and renders the robustly peer-calibrated board, filters, a per-protocol detail view with the
+// model's own arithmetic and the protocol's farm plan, and the live-token set kept apart.
 // No network: every byte it shows is in data.js. Farm-plan derivation mirrors lib/model.ts exactly.
 (function () {
   'use strict';
@@ -56,17 +56,18 @@
   }
 
   // ---- page ----
-  var h1 = el('h1', null, 'Token Launch Radar'); h1.appendChild(el('span', 'dot', ' · radar-2')); main.appendChild(h1);
-  main.appendChild(el('p', 'sub', 'Pre-token protocols ranked by implied value, calibrated on what the market actually pays live-token peers. Snapshot frozen at ' + R.as_of + ' · ' + R.board_size + ' ranked rows · ' + R.watchlist_size + ' watchlist · ' + R.early_size + ' early · ' + R.live_size + ' live tokens set apart, never ranked.'));
+  var h1 = el('h1', null, 'Token Launch Radar'); h1.appendChild(el('span', 'dot', ' · ' + R.model_version)); main.appendChild(h1);
+  main.appendChild(el('p', 'sub', 'Pre-token protocols ranked by implied value, calibrated on what the market actually pays its typical live-token peer. Snapshot frozen at ' + R.as_of + ' · ' + R.board_size + ' ranked rows · ' + R.watchlist_size + ' watchlist · ' + R.early_size + ' early · ' + R.live_size + ' live tokens set apart, never ranked.'));
   var fit = R.peer_fit;
   var model = el('section', 'model');
-  model.appendChild(el('h2', null, 'The stated model — radar-2, peer-calibrated'));
-  var f = el('p'); f.innerHTML = 'implied = <code>exp(' + fit.intercept.toFixed(2) + ') × TVL<sup>' + fit.slope.toFixed(2) + '</sup></code> × <code>momentum</code> × <code>maturity</code>, fitted at run time on the snapshot\'s own ' + fit.peers + ' live, non-CEX peers (log-log regression of market cap on TVL, R² ' + fit.r2.toFixed(2) + ').';
+  model.appendChild(el('h2', null, 'The stated model — radar-3, robust peer calibration'));
+  var f = el('p'); f.innerHTML = 'implied = <code>exp(' + fit.intercept.toFixed(2) + ') × TVL<sup>' + fit.slope.toFixed(2) + '</sup></code> × <code>momentum</code> × <code>maturity</code>, fitted at run time on the snapshot\'s own live, non-CEX peers in two passes: a log-log regression of market cap on TVL, then a refit on the ' + fit.peers + ' peers that survive a 2.5σ robust trim (R² ' + fit.r2.toFixed(2) + ' on the survivors).';
   model.appendChild(f);
   var ul = el('ul');
-  ['Why a power law, not radar-1\'s flat 0.25 × TVL: live peers trade at a median market-cap/TVL of 0.29 below $50M TVL but only 0.03 above $250M — size itself discounts the multiple, and the fitted slope of ' + fit.slope.toFixed(2) + ' says exactly that from the snapshot\'s own numbers.',
-   'Momentum: 1 + clamp(change_7d, −30, +30)% × 0.35. One week of TVL change is noisy — in this snapshot its residual correlation with peer value is near zero — so it reorders neighbours, never dominates.',
-   'Maturity: 0.80 + 0.20 × log-age over 3 years (unknown age counts as 365 days). A log curve: the first tracked months prove the most; radar-1\'s linear ramp taxed a young protocol 40% for age alone.',
+  ['Why robust, not radar-2\'s single least-squares pass: a few extreme peers sit orders of magnitude off the log-log trend and drag an ordinary fit toward themselves. Trimming beyond 2.5 robust sigmas (median absolute deviation, scaled) prices the typical peer instead of the loudest — the board is read from that line.',
+   'Why a power law, not radar-1\'s flat 0.25 × TVL: live peers trade at a median market-cap/TVL of 0.29 below $50M TVL but only 0.03 above $250M — size itself discounts the multiple, and the fitted slope of ' + fit.slope.toFixed(2) + ' says exactly that from the snapshot\'s own numbers.',
+   'Momentum: 1 + clamp(change_7d, −40, +40)% × 0.30. One week of TVL change is noisy — in this snapshot its residual correlation with peer value is near zero — so it reorders neighbours, never dominates.',
+   'Maturity: 0.82 + 0.18 × log-age over 3 years (unknown age counts as 365 days). A log curve: the first tracked months prove the most; radar-1\'s linear ramp taxed a young protocol 40% for age alone.',
    'Live-token protocols are never ranked: their market cap is the market\'s fact, shown apart below. No protocol name is special-cased; one function scores every row.'].forEach(function (t) { ul.appendChild(el('li', null, t)); });
   model.appendChild(ul); main.appendChild(model);
 
